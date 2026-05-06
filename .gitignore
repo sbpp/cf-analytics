@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+dist/
+.dev.vars
+.env
+.env.*
+coverage/
+.vitest-cache/
+.idea/
+.vscode/
+*.log

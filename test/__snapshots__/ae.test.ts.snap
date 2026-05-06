@@ -1,0 +1,33 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`mapDataPoint > maps the canonical payload to the snapshot data point 1`] = `
+{
+  "blobs": [
+    "8f6c5b0000000000000000000000000000000000000000000000000000000000",
+    "2.0.0",
+    "abc1234",
+    "default",
+    "8.2",
+    "mariadb",
+    "10.11",
+    "apache",
+    "linux",
+    null,
+  ],
+  "doubles": [
+    1,
+    31118,
+    12,
+    7,
+    2847,
+    18394,
+    412,
+    5108,
+    23,
+    0,
+  ],
+  "indexes": [
+    "2.0.0",
+  ],
+}
+`;

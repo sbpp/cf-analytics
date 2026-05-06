@@ -1,0 +1,43 @@
+{
+  "blobs": [
+    "instance_id",
+    "panel.version",
+    "panel.git",
+    "panel.theme",
+    "env.php",
+    "env.db_engine",
+    "env.db_version",
+    "env.web_server",
+    "env.os_family",
+    "extras"
+  ],
+  "doubles": [
+    "schema",
+    "panel_features_bits",
+    "scale.admins",
+    "scale.servers_enabled",
+    "scale.bans_active",
+    "scale.bans_total",
+    "scale.comms_active",
+    "scale.comms_total",
+    "scale.submissions_30d",
+    "scale.protests_30d"
+  ],
+  "bits": [
+    "panel.dev",
+    "features.submit",
+    "features.protest",
+    "features.comms",
+    "features.kickit",
+    "features.exportpublic",
+    "features.publiccomments",
+    "features.steamlogin",
+    "features.normallogin",
+    "features.groupbanning",
+    "features.friendsbanning",
+    "features.adminrehashing",
+    "features.smtp_configured",
+    "features.steam_api_key_set",
+    "features.geoip_present"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "cf-analytics-telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker telemetry ingest for the SourceBans++ panel (POST /v1/ping).",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run --outdir=dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "hono": "^4.12.17",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.0",
+    "@cloudflare/workers-types": "^4.20260506.1",
+    "@typescript-eslint/eslint-plugin": "^8.59.2",
+    "@typescript-eslint/parser": "^8.59.2",
+    "eslint": "^9.39.4",
+    "prettier": "^3.8.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.5",
+    "wrangler": "^4.88.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
