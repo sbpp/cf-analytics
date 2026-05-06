@@ -1,0 +1,18 @@
+name = "cf-analytics-telemetry"
+main = "src/index.ts"
+compatibility_date = "2026-05-06"
+compatibility_flags = ["nodejs_compat"]
+
+[[analytics_engine_datasets]]
+binding = "TELEMETRY"
+dataset = "telemetry"
+
+# Zone routing for the public endpoint is intentionally left commented out.
+# DNS / zone wiring for telemetry.sbpp.dev is a follow-up tracked as the second
+# gate in sbpp/cf-analytics#1 and lands in a separate PR. Leaving this commented
+# keeps `wrangler deploy --dry-run` (the CI gate) green even before the zone is
+# attached to this account.
+#
+# [[routes]]
+# pattern = "telemetry.sbpp.dev/*"
+# zone_name = "sbpp.dev"

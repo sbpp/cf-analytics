@@ -1,1 +1,413 @@
-# cf-analytics
+# cf-analytics — telemetry ingest Worker
+
+Cloudflare Worker that accepts schema-1 telemetry pings from
+[SourceBans++](https://github.com/sbpp/sourcebans-pp) panels at
+`https://telemetry.sbpp.dev/v1/ping`, validates with [Zod](https://zod.dev),
+strips IP-bearing headers by construction, and writes to
+[Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/).
+
+This repo is the consumer half of [sbpp/sourcebans-pp#1126](https://github.com/sbpp/sourcebans-pp/issues/1126).
+Implementation is tracked in [#1](https://github.com/sbpp/cf-analytics/issues/1).
+
+## Endpoint contract
+
+| Method | Path       | Behaviour                                                                                                                                                           |
+| ------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/v1/ping` | Validate body against the schema dispatched on `body.schema`. On success: `writeDataPoint` to AE, return `204 No Content`. On schema mismatch / parse error: `400`. |
+| `GET`  | `/healthz` | `200 OK`, body `ok` (plain text). For uptime monitoring.                                                                                                            |
+| `*`    | `*`        | `404`, no body. The path is not echoed.                                                                                                                             |
+
+No CORS, no `OPTIONS` handling. Edge rate limit returns `429` before the
+Worker is invoked (see below).
+
+### Request body (schema 1)
+
+The wire schema is defined jointly by
+[sbpp/sourcebans-pp#1126](https://github.com/sbpp/sourcebans-pp/issues/1126)
+and this repo's [`schema/1.lock.json`](./schema/1.lock.json). The lock file
+is the positional source of truth for the AE blob/double/bit layout; the
+panel issue is the source of truth for the wire field set.
+
+```json
+{
+  "schema": 1,
+  "instance_id": "8f6c5b…",
+  "panel": {
+    "version": "2.0.0",
+    "git": "abc1234",
+    "dev": false,
+    "theme": "default"
+  },
+  "env": {
+    "php": "8.2",
+    "db_engine": "mariadb",
+    "db_version": "10.11",
+    "web_server": "apache",
+    "os_family": "linux"
+  },
+  "scale": {
+    "admins": 12,
+    "servers_enabled": 7,
+    "bans_active": 2847,
+    "bans_total": 18394,
+    "comms_active": 412,
+    "comms_total": 5108,
+    "submissions_30d": 23,
+    "protests_30d": 0
+  },
+  "features": {
+    "submit": true,
+    "protest": true,
+    "comms": true,
+    "kickit": false,
+    "exportpublic": false,
+    "publiccomments": false,
+    "steamlogin": true,
+    "normallogin": true,
+    "groupbanning": false,
+    "friendsbanning": false,
+    "adminrehashing": true,
+    "smtp_configured": true,
+    "steam_api_key_set": true,
+    "geoip_present": true
+  }
+}
+```
+
+Only `schema` and `instance_id` are required. Every other field is
+`.optional()` in the validator (forward-compat optionality rule). Unknown
+top-level keys pass through and are captured into the `extras` blob.
+
+### Response
+
+- `204 No Content` on success — no body.
+- `400 { "error": "schema_not_supported" }` for unknown / missing / non-numeric `schema`.
+- `400 { "error": "schema_invalid" }` for shape mismatches inside a known schema.
+- `400 { "error": "invalid_json" }` for malformed JSON bodies.
+- `404` (no body) for everything else.
+- `429` from Cloudflare's edge for rate-limited clients (the Worker isn't invoked).
+
+## Privacy / anonymity contract
+
+The Worker MUST NOT persist or log any of the following, full stop. This is
+the load-bearing trust contract from
+[sbpp/sourcebans-pp#1126](https://github.com/sbpp/sourcebans-pp/issues/1126):
+
+- `CF-Connecting-IP` / `CF-Connecting-IPv6` header values
+- `X-Forwarded-For` / `X-Real-IP` header values
+- `True-Client-IP` (Enterprise plan; banned to be safe)
+- `CF-Pseudo-IPv4` header value
+- `request.cf.city`, `request.cf.latitude`, `request.cf.longitude`,
+  `request.cf.region`, `request.cf.regionCode`, `request.cf.postalCode`,
+  `request.cf.metroCode`, `request.cf.timezone`
+- TLS fingerprints
+
+`request.cf.colo` (the edge node id) is allowed — it identifies our edge, not
+the client.
+
+The Worker is structured so the AE data point is built _only_ from the
+validated body. Headers and `request.cf` are never read on the ingest path.
+That makes "no IP data path" the default, not an opt-in. The IP-stripping
+middleware ([`src/strip-ip.ts`](./src/strip-ip.ts)) is a guard rail that
+documents the contract and exposes a test helper (`assertNoIpFields`) that
+the IP-leak test in [`test/ip-leak.test.ts`](./test/ip-leak.test.ts) calls on
+every captured `writeDataPoint` argument.
+
+**No Logpush.** Turning on Logpush would re-introduce the IP-leak surface;
+adding it later requires re-deriving this contract against the new sink.
+
+### On dropping `scale.*` bucketing (privacy trade-off)
+
+Schema-1 ships raw integer counts (e.g. `bans_active: 2847`) rather than the
+bucketed strings (`"1k-9.9k"`) originally proposed in
+[sbpp/sourcebans-pp#1126](https://github.com/sbpp/sourcebans-pp/issues/1126).
+
+**Raw counts combined with `panel.theme`, `panel.git`, and `env.*` produce a
+higher-resolution per-install fingerprint than buckets would.** The trade-off
+is acceptable for this iteration because:
+
+1. The data lives only in AE, never in logs, extracts, or row-granularity exports.
+2. The IP-stripping contract is unaffected.
+3. Access to AE is roadmap-decision-only — there is no public dashboard, no
+   anonymous extract, no row-level API.
+
+**Any future change that exposes row-level data (public stats page,
+downloadable extracts, etc.) reopens this decision and requires a privacy
+review before shipping.** The original bucketing rationale is preserved in
+sbpp/sourcebans-pp#1126's history.
+
+## Schema evolution rules
+
+There is no auto-update for self-hosted SourceBans++ installs. Old panels
+keep sending old payloads forever. The Worker accepts every schema version
+it has ever shipped, in parallel with whatever the latest panel sends.
+
+**Three evolution axes** (see [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the
+edit policy):
+
+1. **Additive — panel adds a new optional field within a schema version.**
+   Schema number stays at 1. The Worker's `.passthrough()` validator keeps
+   the unknown key in the parsed payload, and `mapDataPoint` puts it in the
+   `extras` JSON blob. Once promoted to a typed slot, the field appends to
+   `lock.blobs` / `lock.doubles` at the next free position. Until promotion,
+   queries reach it via `json_extract(blob<extras>, '$.new_field')`.
+2. **Slot exhaustion.** Schema-1 reserves 20 blob slots and 20 double slots.
+   Currently 10/20 blobs and 10/20 doubles are committed. Once an addition
+   would push past the cap, the field lives permanently in `extras` until a
+   schema bump. **We never reshuffle existing slot positions** — AE indexes
+   are positional, and historical rows already use the current layout.
+3. **Subtractive / repurposing.** Bumps the schema number. The panel sends
+   `schema: 2`, the Worker dispatches to a separate validator + writer.
+   Both schemas write to the same AE dataset, distinguished by the `schema`
+   double. Schema-1 validators are kept indefinitely — the long-tail of
+   un-upgraded installs is exactly the dataset we exist to capture.
+
+## AE layout
+
+Positions in the table below are **the contract**. Never reorder them. The
+JSON block between the markers is byte-equal to
+[`schema/1.lock.json`](./schema/1.lock.json); the layout test in
+[`test/layout.test.ts`](./test/layout.test.ts) parses this block and asserts
+deep-equality both directions.
+
+<!-- ae-layout-start -->
+
+```json
+{
+  "blobs": [
+    "instance_id",
+    "panel.version",
+    "panel.git",
+    "panel.theme",
+    "env.php",
+    "env.db_engine",
+    "env.db_version",
+    "env.web_server",
+    "env.os_family",
+    "extras"
+  ],
+  "doubles": [
+    "schema",
+    "panel_features_bits",
+    "scale.admins",
+    "scale.servers_enabled",
+    "scale.bans_active",
+    "scale.bans_total",
+    "scale.comms_active",
+    "scale.comms_total",
+    "scale.submissions_30d",
+    "scale.protests_30d"
+  ],
+  "bits": [
+    "panel.dev",
+    "features.submit",
+    "features.protest",
+    "features.comms",
+    "features.kickit",
+    "features.exportpublic",
+    "features.publiccomments",
+    "features.steamlogin",
+    "features.normallogin",
+    "features.groupbanning",
+    "features.friendsbanning",
+    "features.adminrehashing",
+    "features.smtp_configured",
+    "features.steam_api_key_set",
+    "features.geoip_present"
+  ]
+}
+```
+
+<!-- ae-layout-end -->
+
+### Reading the layout
+
+- `blobs[i]` is AE's `blob{i+1}` column (AE columns are 1-indexed in SQL).
+  `blobs[0] = "instance_id"` therefore queries as `blob1`.
+- `doubles[i]` is AE's `double{i+1}` column.
+- `indexes[0]` is AE's `index1` column. The Worker indexes by
+  `panel.version`, which gives bounded cardinality and is the field most
+  queries filter on.
+- `bits[i]` is bit `i` (LSB = 0) of the `panel_features_bits` double.
+  15 booleans pack into one double, leaving 10/20 doubles free for future
+  scale dimensions.
+- Missing typed strings → `null` in the corresponding blob. Missing scale
+  numbers → `null` in the corresponding double (so analysts can distinguish
+  "not sent" from "zero"). Missing booleans → `0` bits in
+  `panel_features_bits`. The `panel_features_bits` double is always present.
+- `extras` (last blob) is `null` when there are no unknown top-level keys,
+  otherwise a JSON-stringified object of every unknown top-level key. AE
+  stores nothing rather than `{}` so analysts don't have to coalesce empty
+  objects out.
+
+## `featureFlag(name)` SQL macro for AE
+
+Once a feature is in `lock.bits`, queries against AE can extract any
+individual feature flag from the `panel_features_bits` double:
+
+```sql
+-- featureFlag(name): treats double2 as the packed bitfield and returns 1
+-- when bit at lock.bits.indexOf(name) is set, 0 otherwise.
+--
+-- Replace <bit_index> with the 0-based position of `<name>` in lock.bits.
+-- e.g. "features.submit" lives at index 1, so featureFlag("features.submit")
+-- is `(double2 >> 1) & 1`.
+SELECT
+  blob2 AS panel_version,
+  ((toUInt64(double2) >> 0)  & 1) AS panel_dev,
+  ((toUInt64(double2) >> 1)  & 1) AS feature_submit,
+  ((toUInt64(double2) >> 4)  & 1) AS feature_kickit,
+  ((toUInt64(double2) >> 14) & 1) AS feature_geoip_present,
+  count() AS pings
+FROM telemetry
+WHERE timestamp > now() - INTERVAL 7 DAY
+GROUP BY panel_version, panel_dev, feature_submit, feature_kickit, feature_geoip_present
+ORDER BY pings DESC;
+```
+
+The bit index for a feature name is its 0-based position in `lock.bits`. To
+look up the position programmatically, see
+[`src/lock.ts`](./src/lock.ts)'s `bitIndex()` helper.
+
+### Promoting an `extras` field to a typed slot
+
+Once a panel-side field is observed often enough to promote out of `extras`,
+queries that span the promotion boundary need to coalesce both sources:
+
+```sql
+SELECT
+  coalesce(blob10, json_extract(blob10, '$.field_name')) AS field_name
+FROM telemetry;
+```
+
+The exact column index depends on which blob the field is promoted to.
+Update this README's AE-layout block (and `schema/1.lock.json`) at promotion
+time so the contract stays self-documenting.
+
+## Edge rate limit
+
+A Cloudflare Rate Limiting Rule (WAF, edge phase) drops clients that exceed
+**1 request per 10 seconds per IP**. This is the strictest threshold the
+Free plan supports. Panels ping once per 24h with ±1h jitter, so legitimate
+traffic stays orders of magnitude below the limit.
+
+Recommended rule expression in the Cloudflare dashboard / Terraform:
+
+```
+(http.host eq "telemetry.sbpp.dev") and (http.request.method eq "POST") and (http.request.uri.path eq "/v1/ping")
+```
+
+- Characteristics: IP source.
+- Period: 10 seconds.
+- Requests: 1.
+- Action: Block (or `Managed Challenge` if false-positives become a problem).
+
+**Blocked-at-edge requests do not invoke the Worker.** No Workers billing
+and no AE write — see [Cloudflare's pricing
+docs](https://developers.cloudflare.com/workers/platform/pricing/) on edge
+rejections. The rule lives in dashboard / Terraform, not in Worker code, so
+retuning is cheap.
+
+## Cross-repo usage
+
+`schema/1.lock.json` is **vendored** by SourceBans++ at
+`web/includes/telemetry/schema-1.lock.json` (see
+[sbpp/sourcebans-pp#1126](https://github.com/sbpp/sourcebans-pp/issues/1126)).
+
+Non-append edits to the lock file require a paired panel-side PR _before_
+merge here. The append-only edit policy and the parity test are documented
+in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## Local dev
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm test
+npm run dev          # wrangler dev — local Workers runtime on :8787
+```
+
+Send a test ping:
+
+```bash
+curl -i http://127.0.0.1:8787/v1/ping \
+  -H 'content-type: application/json' \
+  -d '{
+    "schema": 1,
+    "instance_id": "test-instance-0000000000000000000000000000000000000000000000000000",
+    "panel": {"version":"2.0.0","git":"abc1234","dev":false,"theme":"default"},
+    "env": {"php":"8.2","db_engine":"mariadb","db_version":"10.11","web_server":"apache","os_family":"linux"},
+    "scale": {"admins":1,"servers_enabled":1,"bans_active":0,"bans_total":0,"comms_active":0,"comms_total":0,"submissions_30d":0,"protests_30d":0},
+    "features": {"submit":true,"protest":false,"comms":false,"kickit":false,"exportpublic":false,"publiccomments":false,"steamlogin":true,"normallogin":true,"groupbanning":false,"friendsbanning":false,"adminrehashing":false,"smtp_configured":false,"steam_api_key_set":false,"geoip_present":false}
+  }'
+```
+
+Expected: `HTTP/1.1 204 No Content` and an AE write recorded in
+`wrangler dev`'s log (the binding is real even in local dev — miniflare
+provides an in-memory implementation).
+
+Liveness probe:
+
+```bash
+curl http://127.0.0.1:8787/healthz
+# ok
+```
+
+## Deploy
+
+### Required GitHub Actions secrets
+
+| Secret                  | Purpose                                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`  | Token with `Workers Scripts: Edit` and `Account Analytics: Read` scopes for this account. |
+| `CLOUDFLARE_ACCOUNT_ID` | Account that owns the `cf-analytics-telemetry` Worker.                                    |
+
+CI workflow [`./.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs
+typecheck / lint / test / `wrangler deploy --dry-run` on every PR — no
+secrets needed for the dry-run gate.
+
+The deploy workflow [`./.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)
+runs `wrangler deploy` on push to `main` and reads the two secrets above.
+
+### Manual DNS / zone wiring (deferred)
+
+Wiring `telemetry.sbpp.dev` to the Worker is the second gate in
+[#1](https://github.com/sbpp/cf-analytics/issues/1) and lands in a separate
+PR. The route block in [`wrangler.toml`](./wrangler.toml) is intentionally
+left commented out so `wrangler deploy --dry-run` (the CI gate) doesn't
+fail on an un-attached zone:
+
+```toml
+# [[routes]]
+# pattern = "telemetry.sbpp.dev/*"
+# zone_name = "sbpp.dev"
+```
+
+Steps when the zone wiring PR lands:
+
+1. Confirm `sbpp.dev` is in a Cloudflare account this repo's deploy token can
+   manage routes for.
+2. Create a `CNAME telemetry → workers.dev` (or the equivalent Workers
+   custom-domain wiring).
+3. Uncomment the `[[routes]]` block.
+4. Re-run `wrangler deploy`.
+5. Verify `https://telemetry.sbpp.dev/healthz` returns `200 OK` from a fresh
+   curl from outside the Cloudflare network.
+
+## Self-hoster path
+
+The default endpoint baked into SourceBans++ is `https://telemetry.sbpp.dev/v1/ping`,
+but the project is single-tenant friendly. To run your own collector:
+
+1. Fork this repo (or just clone it; nothing is opinionated about the org).
+2. Edit `wrangler.toml`: change `name`, the `dataset` if you want a separate
+   AE dataset, and the (commented) `[[routes]]` block to your hostname.
+3. `npm install && npm run deploy` with your own `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID`.
+4. Point your panel at your collector via the panel-side telemetry endpoint
+   override (see [sbpp/sourcebans-pp#1126](https://github.com/sbpp/sourcebans-pp/issues/1126)
+   for the override config key).
+
+The schema lock file and IP-stripping contract are part of this repo, not
+the deploy target — your collector inherits both.
