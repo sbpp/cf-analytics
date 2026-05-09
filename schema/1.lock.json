@@ -5,15 +5,19 @@
     "panel.git",
     "panel.theme",
     "env.php",
+    "env.sapi",
+    "env.os_family",
+    "env.web_server",
     "env.db_engine",
     "env.db_version",
-    "env.web_server",
-    "env.os_family",
     "extras"
   ],
   "doubles": [
     "schema",
     "panel_features_bits",
+    "env.memory_limit_mb",
+    "env.max_execution_time",
+    "env.disable_functions_count",
     "scale.admins",
     "scale.servers_enabled",
     "scale.bans_active",
@@ -38,6 +42,18 @@
     "features.adminrehashing",
     "features.smtp_configured",
     "features.steam_api_key_set",
-    "features.geoip_present"
+    "features.geoip_present",
+    "env.zts",
+    "env.php_64bit",
+    "env.open_basedir_set",
+    "env.allow_url_fopen",
+    "env.opcache_loaded",
+    "env.suhosin_loaded",
+    "env.posix_available",
+    "env.host_panel_cpanel",
+    "env.host_panel_plesk",
+    "env.host_panel_directadmin",
+    "env.docroot_user_home",
+    "env.sapi_per_user"
   ]
 }
