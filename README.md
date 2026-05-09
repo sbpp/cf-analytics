@@ -40,10 +40,26 @@ panel issue is the source of truth for the wire field set.
   },
   "env": {
     "php": "8.2",
+    "sapi": "fpm-fcgi",
     "db_engine": "mariadb",
     "db_version": "10.11",
-    "web_server": "apache",
-    "os_family": "linux"
+    "web_server": "litespeed",
+    "os_family": "linux",
+    "memory_limit_mb": 256,
+    "max_execution_time": 30,
+    "disable_functions_count": 7,
+    "zts": false,
+    "php_64bit": true,
+    "open_basedir_set": true,
+    "allow_url_fopen": true,
+    "opcache_loaded": true,
+    "suhosin_loaded": false,
+    "posix_available": true,
+    "host_panel_cpanel": true,
+    "host_panel_plesk": false,
+    "host_panel_directadmin": false,
+    "docroot_user_home": true,
+    "sapi_per_user": true
   },
   "scale": {
     "admins": 12,
@@ -152,7 +168,7 @@ edit policy):
    `lock.blobs` / `lock.doubles` at the next free position. Until promotion,
    queries reach it via `json_extract(blob<extras>, '$.new_field')`.
 2. **Slot exhaustion.** Schema-1 reserves 20 blob slots and 20 double slots.
-   Currently 10/20 blobs and 10/20 doubles are committed. Once an addition
+   Currently 11/20 blobs and 13/20 doubles are committed. Once an addition
    would push past the cap, the field lives permanently in `extras` until a
    schema bump. **We never reshuffle existing slot positions** — AE indexes
    are positional, and historical rows already use the current layout.
@@ -180,15 +196,19 @@ deep-equality both directions.
     "panel.git",
     "panel.theme",
     "env.php",
+    "env.sapi",
+    "env.os_family",
+    "env.web_server",
     "env.db_engine",
     "env.db_version",
-    "env.web_server",
-    "env.os_family",
     "extras"
   ],
   "doubles": [
     "schema",
     "panel_features_bits",
+    "env.memory_limit_mb",
+    "env.max_execution_time",
+    "env.disable_functions_count",
     "scale.admins",
     "scale.servers_enabled",
     "scale.bans_active",
@@ -213,7 +233,19 @@ deep-equality both directions.
     "features.adminrehashing",
     "features.smtp_configured",
     "features.steam_api_key_set",
-    "features.geoip_present"
+    "features.geoip_present",
+    "env.zts",
+    "env.php_64bit",
+    "env.open_basedir_set",
+    "env.allow_url_fopen",
+    "env.opcache_loaded",
+    "env.suhosin_loaded",
+    "env.posix_available",
+    "env.host_panel_cpanel",
+    "env.host_panel_plesk",
+    "env.host_panel_directadmin",
+    "env.docroot_user_home",
+    "env.sapi_per_user"
   ]
 }
 ```
@@ -229,8 +261,8 @@ deep-equality both directions.
   `panel.version`, which gives bounded cardinality and is the field most
   queries filter on.
 - `bits[i]` is bit `i` (LSB = 0) of the `panel_features_bits` double.
-  15 booleans pack into one double, leaving 10/20 doubles free for future
-  scale dimensions.
+  27 booleans pack into one double (well under the 53-bit safe-integer
+  ceiling), leaving 7/20 doubles free for future scale dimensions.
 - Missing typed strings → `null` in the corresponding blob. Missing scale
   numbers → `null` in the corresponding double (so analysts can distinguish
   "not sent" from "zero"). Missing booleans → `0` bits in
@@ -268,6 +300,61 @@ ORDER BY pings DESC;
 The bit index for a feature name is its 0-based position in `lock.bits`. To
 look up the position programmatically, see
 [`src/lock.ts`](./src/lock.ts)'s `bitIndex()` helper.
+
+### Deriving `host_kind` query-time
+
+The `env.*` shared-hosting fingerprint signals (added in
+[#3](https://github.com/sbpp/cf-analytics/issues/3)) are deliberately shipped
+raw rather than collapsed into a panel-side `env.host_kind` label. The
+heuristic that classifies a host as `shared` / `constrained` /
+`unconstrained` is exactly the thing we want to retune as we see what real
+installs look like — keeping it in SQL means tuning is a query edit, not a
+panel deploy.
+
+Bit and double indices below come straight from `schema/1.lock.json`:
+`env.open_basedir_set` is bit 17, the four panel/path/SAPI corroborators
+are bits 22–26, `env.memory_limit_mb` is `double3` (slot index 2),
+`env.max_execution_time` is `double4` (slot index 3). If the lock file ever
+changes (subject to [`CONTRIBUTING.md`](./CONTRIBUTING.md) rule 1), update
+the shifts here in lockstep.
+
+```sql
+-- hostKind(): heuristic shared-vs-not classification computed query-time
+-- from the env.* fingerprint signals. Tuneable without a panel/Worker
+-- deploy by editing this query.
+SELECT
+  CASE
+    WHEN ((toUInt64(double2) >> 17) & 1) = 1                       -- env.open_basedir_set
+      AND (
+        ((toUInt64(double2) >> 22) & 1) = 1                        -- env.host_panel_cpanel
+        OR ((toUInt64(double2) >> 23) & 1) = 1                     -- env.host_panel_plesk
+        OR ((toUInt64(double2) >> 24) & 1) = 1                     -- env.host_panel_directadmin
+        OR ((toUInt64(double2) >> 25) & 1) = 1                     -- env.docroot_user_home
+        OR ((toUInt64(double2) >> 26) & 1) = 1                     -- env.sapi_per_user
+      )
+      THEN 'shared'
+    WHEN double3 IS NOT NULL AND double3 <= 256                    -- env.memory_limit_mb
+      AND double4 IS NOT NULL AND double4 <= 60                    -- env.max_execution_time
+      THEN 'constrained'
+    ELSE 'unconstrained'
+  END AS host_kind,
+  count() AS pings
+FROM telemetry
+WHERE timestamp > now() - INTERVAL 7 DAY
+GROUP BY host_kind
+ORDER BY pings DESC;
+```
+
+Two notes on why the signals exist as they do:
+
+- **No raw paths or `disable_functions` strings.** `DOCUMENT_ROOT` under
+  cPanel/DirectAdmin contains the account username; `open_basedir`'s value
+  leaks the home dir; `disable_functions` as a string is itself a host-
+  provider fingerprint. Each of those is reduced to a boolean or count
+  here, matching the rest of the schema's privacy posture.
+- **Bits 22–26 corroborate bit 17.** `env.open_basedir_set` alone catches
+  most shared hosts but also flags hardened VPS/dedicated boxes; AND-ing
+  with at least one of the panel/path/SAPI signals separates the cohorts.
 
 ### Promoting an `extras` field to a typed slot
 
@@ -337,7 +424,7 @@ curl -i http://127.0.0.1:8787/v1/ping \
     "schema": 1,
     "instance_id": "test-instance-0000000000000000000000000000000000000000000000000000",
     "panel": {"version":"2.0.0","git":"abc1234","dev":false,"theme":"default"},
-    "env": {"php":"8.2","db_engine":"mariadb","db_version":"10.11","web_server":"apache","os_family":"linux"},
+    "env": {"php":"8.2","sapi":"fpm-fcgi","db_engine":"mariadb","db_version":"10.11","web_server":"litespeed","os_family":"linux","memory_limit_mb":256,"max_execution_time":30,"disable_functions_count":7,"zts":false,"php_64bit":true,"open_basedir_set":true,"allow_url_fopen":true,"opcache_loaded":true,"suhosin_loaded":false,"posix_available":true,"host_panel_cpanel":true,"host_panel_plesk":false,"host_panel_directadmin":false,"docroot_user_home":true,"sapi_per_user":true},
     "scale": {"admins":1,"servers_enabled":1,"bans_active":0,"bans_total":0,"comms_active":0,"comms_total":0,"submissions_30d":0,"protests_30d":0},
     "features": {"submit":true,"protest":false,"comms":false,"kickit":false,"exportpublic":false,"publiccomments":false,"steamlogin":true,"normallogin":true,"groupbanning":false,"friendsbanning":false,"adminrehashing":false,"smtp_configured":false,"steam_api_key_set":false,"geoip_present":false}
   }'

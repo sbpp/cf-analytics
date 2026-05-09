@@ -25,10 +25,26 @@ const schema1Panel = z
 const schema1Env = z
   .object({
     php: z.string().optional(),
+    sapi: z.string().optional(),
     db_engine: z.string().optional(),
     db_version: z.string().optional(),
     web_server: z.string().optional(),
     os_family: z.string().optional(),
+    memory_limit_mb: z.number().optional(),
+    max_execution_time: z.number().optional(),
+    disable_functions_count: z.number().optional(),
+    zts: z.boolean().optional(),
+    php_64bit: z.boolean().optional(),
+    open_basedir_set: z.boolean().optional(),
+    allow_url_fopen: z.boolean().optional(),
+    opcache_loaded: z.boolean().optional(),
+    suhosin_loaded: z.boolean().optional(),
+    posix_available: z.boolean().optional(),
+    host_panel_cpanel: z.boolean().optional(),
+    host_panel_plesk: z.boolean().optional(),
+    host_panel_directadmin: z.boolean().optional(),
+    docroot_user_home: z.boolean().optional(),
+    sapi_per_user: z.boolean().optional(),
   })
   .passthrough();
 
