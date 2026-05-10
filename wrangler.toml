@@ -7,12 +7,28 @@ compatibility_flags = ["nodejs_compat"]
 binding = "TELEMETRY"
 dataset = "telemetry"
 
-# Zone routing for the public endpoint is intentionally left commented out.
-# DNS / zone wiring for telemetry.sbpp.dev is a follow-up tracked as the second
-# gate in sbpp/cf-analytics#1 and lands in a separate PR. Leaving this commented
-# keeps `wrangler deploy --dry-run` (the CI gate) green even before the zone is
-# attached to this account.
+# Worker-runtime rate limit, applied per `instance_id` after schema validation.
+# Threshold matches the original WAF-rule design (1 request / 10s) but keyed on
+# the body-supplied `instance_id` rather than the source IP — preserves the "no
+# IP data path" privacy contract (see src/strip-ip.ts and the README's
+# Privacy / anonymity section).
+#
+# Self-hosters with their own zone can layer a WAF Rate Limiting Rule on top of
+# this for cheaper edge rejection — see the "Edge rate limit" section in
+# README.md.
+[[ratelimits]]
+name = "TELEMETRY_RL"
+namespace_id = "1"
+
+  [ratelimits.simple]
+  limit = 1
+  period = 10
+
+# Custom domain (optional, self-hoster path). The canonical deploy lives at
+# https://cf-analytics-telemetry.sbpp.workers.dev — no zone wiring required.
+# If you fork this and have a Cloudflare zone, uncomment and edit the block
+# below to route a hostname of your choosing to the Worker.
 #
 # [[routes]]
-# pattern = "telemetry.sbpp.dev/*"
-# zone_name = "sbpp.dev"
+# pattern = "telemetry.example.com/*"
+# zone_name = "example.com"

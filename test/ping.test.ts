@@ -24,6 +24,34 @@ describe("Worker routes", () => {
     expect(res.status).toBe(204);
     expect(await res.text()).toBe("");
     expect(env.TELEMETRY.calls).toHaveLength(1);
+    // The rate limiter is keyed on `instance_id` from the validated body.
+    // This pins the privacy-preserving choice (key on body, not IP) into a
+    // test so a future maintainer can't quietly switch it to `cf-connecting-ip`.
+    expect(env.TELEMETRY_RL.calls).toEqual([{ key: canonicalPayload.instance_id }]);
+  });
+
+  it("returns 429 with empty body when the rate limiter rejects, without writing to AE", async () => {
+    const env = makeEnv();
+    const ctx = createExecutionContext();
+    env.TELEMETRY_RL.forceFailures.push(true);
+    const res = await worker.fetch(jsonRequest(canonicalPayload), env, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(429);
+    expect(await res.text()).toBe("");
+    expect(env.TELEMETRY.calls).toHaveLength(0);
+    expect(env.TELEMETRY_RL.calls).toEqual([{ key: canonicalPayload.instance_id }]);
+  });
+
+  it("rate-limit check runs after schema validation (invalid payloads do not consume tokens)", async () => {
+    const env = makeEnv();
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(jsonRequest({ schema: 1, instance_id: "" }), env, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(400);
+    expect(env.TELEMETRY.calls).toHaveLength(0);
+    expect(env.TELEMETRY_RL.calls).toHaveLength(0);
   });
 
   it("GET /healthz returns 200 with body 'ok' as plain text", async () => {

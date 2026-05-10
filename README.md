@@ -2,9 +2,9 @@
 
 Cloudflare Worker that accepts schema-1 telemetry pings from
 [SourceBans++](https://github.com/sbpp/sourcebans-pp) panels at
-`https://telemetry.sbpp.dev/v1/ping`, validates with [Zod](https://zod.dev),
-strips IP-bearing headers by construction, and writes to
-[Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/).
+`https://cf-analytics-telemetry.sbpp.workers.dev/v1/ping`, validates with
+[Zod](https://zod.dev), strips IP-bearing headers by construction, and writes
+to [Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/).
 
 This repo is the consumer half of [sbpp/sourcebans-pp#1126](https://github.com/sbpp/sourcebans-pp/issues/1126).
 Implementation is tracked in [#1](https://github.com/sbpp/cf-analytics/issues/1).
@@ -371,17 +371,43 @@ The exact column index depends on which blob the field is promoted to.
 Update this README's AE-layout block (and `schema/1.lock.json`) at promotion
 time so the contract stays self-documenting.
 
-## Edge rate limit
+## Rate limit
 
-A Cloudflare Rate Limiting Rule (WAF, edge phase) drops clients that exceed
-**1 request per 10 seconds per IP**. This is the strictest threshold the
-Free plan supports. Panels ping once per 24h with ±1h jitter, so legitimate
-traffic stays orders of magnitude below the limit.
+The canonical deploy uses the [Workers Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+declared in [`wrangler.toml`](./wrangler.toml) as `TELEMETRY_RL`, configured
+at **1 request per 10 seconds**. The `limit()` call is keyed on the
+body-supplied `instance_id` rather than the source IP, deliberately:
 
-Recommended rule expression in the Cloudflare dashboard / Terraform:
+- Keying on IP would require reading `CF-Connecting-IP`, which violates the
+  "no IP data path" privacy contract enforced by [`src/strip-ip.ts`](./src/strip-ip.ts)
+  and pinned by [`test/ip-leak.test.ts`](./test/ip-leak.test.ts).
+- A misconfigured panel hammering the endpoint is the realistic abuse case;
+  rate-limiting per-`instance_id` throttles the offending panel without
+  punishing other panels behind the same NAT.
+- A bad actor varying `instance_id` to bypass the per-instance limit still
+  pays the full schema-validation cost on each request and writes nothing
+  to AE on rejection — the Worker invocation cost is the only damage.
+- Period must be 10 or 60 (the binding's only supported values); 10 matches
+  the legacy WAF-rule design.
+
+Panels ping once per 24h with ±1h jitter, so legitimate traffic stays orders
+of magnitude below the threshold. The test in [`test/ping.test.ts`](./test/ping.test.ts)
+pins both behaviours: 429-on-exceed without an AE write, and the
+`instance_id`-as-key choice (so a future maintainer can't quietly switch the
+key to `cf-connecting-ip`).
+
+### WAF rate limit (self-hosters with their own zone)
+
+If you fork this and own a Cloudflare zone, you can layer a WAF Rate
+Limiting Rule on top for cheaper edge rejection (blocked-at-edge requests
+don't invoke the Worker at all — no Workers billing, no AE write). The
+Worker-runtime limit above stays in place either way.
+
+Recommended rule expression in the Cloudflare dashboard / Terraform
+(substitute your hostname):
 
 ```
-(http.host eq "telemetry.sbpp.dev") and (http.request.method eq "POST") and (http.request.uri.path eq "/v1/ping")
+(http.host eq "telemetry.example.com") and (http.request.method eq "POST") and (http.request.uri.path eq "/v1/ping")
 ```
 
 - Characteristics: IP source.
@@ -389,11 +415,9 @@ Recommended rule expression in the Cloudflare dashboard / Terraform:
 - Requests: 1.
 - Action: Block (or `Managed Challenge` if false-positives become a problem).
 
-**Blocked-at-edge requests do not invoke the Worker.** No Workers billing
-and no AE write — see [Cloudflare's pricing
-docs](https://developers.cloudflare.com/workers/platform/pricing/) on edge
-rejections. The rule lives in dashboard / Terraform, not in Worker code, so
-retuning is cheap.
+WAF rate limit rules are a per-zone feature; they are not available on
+`*.workers.dev`, which is why the canonical deploy relies on the
+Worker-runtime binding instead.
 
 ## Cross-repo usage
 
@@ -457,35 +481,37 @@ secrets needed for the dry-run gate.
 The deploy workflow [`./.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)
 runs `wrangler deploy` on push to `main` and reads the two secrets above.
 
-### Manual DNS / zone wiring (deferred)
+### Custom domain (optional)
 
-Wiring `telemetry.sbpp.dev` to the Worker is the second gate in
-[#1](https://github.com/sbpp/cf-analytics/issues/1) and lands in a separate
-PR. The route block in [`wrangler.toml`](./wrangler.toml) is intentionally
-left commented out so `wrangler deploy --dry-run` (the CI gate) doesn't
-fail on an un-attached zone:
+The canonical deploy lives at
+`https://cf-analytics-telemetry.sbpp.workers.dev` and requires no zone
+wiring. If you fork this and own a Cloudflare zone, you can route a
+hostname of your choosing to the Worker by editing the commented
+`[[routes]]` block in [`wrangler.toml`](./wrangler.toml):
 
 ```toml
 # [[routes]]
-# pattern = "telemetry.sbpp.dev/*"
-# zone_name = "sbpp.dev"
+# pattern = "telemetry.example.com/*"
+# zone_name = "example.com"
 ```
 
-Steps when the zone wiring PR lands:
+Steps:
 
-1. Confirm `sbpp.dev` is in a Cloudflare account this repo's deploy token can
-   manage routes for.
+1. Confirm `example.com` is in a Cloudflare account your deploy token can
+   manage routes for, and add the `Workers Routes: Edit` zone scope to the
+   token.
 2. Create a `CNAME telemetry → workers.dev` (or the equivalent Workers
    custom-domain wiring).
-3. Uncomment the `[[routes]]` block.
+3. Uncomment and edit the `[[routes]]` block to your hostname / zone.
 4. Re-run `wrangler deploy`.
-5. Verify `https://telemetry.sbpp.dev/healthz` returns `200 OK` from a fresh
-   curl from outside the Cloudflare network.
+5. Verify `https://telemetry.example.com/healthz` returns `200 OK` from a
+   fresh curl from outside the Cloudflare network.
 
 ## Self-hoster path
 
-The default endpoint baked into SourceBans++ is `https://telemetry.sbpp.dev/v1/ping`,
-but the project is single-tenant friendly. To run your own collector:
+The default endpoint baked into SourceBans++ is
+`https://cf-analytics-telemetry.sbpp.workers.dev/v1/ping`, but the project
+is single-tenant friendly. To run your own collector:
 
 1. Fork this repo (or just clone it; nothing is opinionated about the org).
 2. Edit `wrangler.toml`: change `name`, the `dataset` if you want a separate
