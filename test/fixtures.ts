@@ -1,4 +1,5 @@
 import type { AnalyticsEngineLike } from "../src/ae";
+import type { RateLimitLike } from "../src/index";
 
 /**
  * Canonical schema-1 payload — byte-for-byte the example body in
@@ -97,7 +98,43 @@ export function makeMockTelemetry(): MockTelemetry {
   };
 }
 
+/** Captured `limit()` call shape, narrowed for test ergonomics. */
+export interface RecordedLimitCall {
+  key: string;
+}
+
+/**
+ * Mock rate-limit binding that records every `limit()` call and lets the test
+ * pre-program a sequence of `success: boolean` responses. The default queue is
+ * empty, which means `limit()` returns `{ success: true }` — the happy path
+ * for the vast majority of tests that don't care about rate-limiting.
+ */
+export interface MockRateLimit extends RateLimitLike {
+  calls: RecordedLimitCall[];
+  /** Push `false`s onto this list to make the next N `limit()` calls fail. */
+  forceFailures: boolean[];
+  reset(): void;
+}
+
+export function makeMockRateLimit(): MockRateLimit {
+  const calls: RecordedLimitCall[] = [];
+  const forceFailures: boolean[] = [];
+  return {
+    calls,
+    forceFailures,
+    reset() {
+      calls.length = 0;
+      forceFailures.length = 0;
+    },
+    async limit({ key }) {
+      calls.push({ key });
+      const failure = forceFailures.shift();
+      return { success: failure === true ? false : true };
+    },
+  };
+}
+
 /** Build the env object passed to `worker.fetch(req, env, ctx)` in tests. */
-export function makeEnv(): { TELEMETRY: MockTelemetry } {
-  return { TELEMETRY: makeMockTelemetry() };
+export function makeEnv(): { TELEMETRY: MockTelemetry; TELEMETRY_RL: MockRateLimit } {
+  return { TELEMETRY: makeMockTelemetry(), TELEMETRY_RL: makeMockRateLimit() };
 }
