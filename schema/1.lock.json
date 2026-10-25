@@ -10,7 +10,8 @@
     "env.web_server",
     "env.db_engine",
     "env.db_version",
-    "extras"
+    "extras",
+    "panel.region"
   ],
   "doubles": [
     "schema",
@@ -25,7 +26,10 @@
     "scale.comms_active",
     "scale.comms_total",
     "scale.submissions_30d",
-    "scale.protests_30d"
+    "scale.protests_30d",
+    "scale.bans_30d",
+    "scale.admins_active_30d",
+    "scale.ban_history_months"
   ],
   "bits": [
     "panel.dev",
@@ -54,6 +58,18 @@
     "env.host_panel_plesk",
     "env.host_panel_directadmin",
     "env.docroot_user_home",
-    "env.sapi_per_user"
+    "env.sapi_per_user",
+    "scale.games.tf",
+    "scale.games.cstrike",
+    "scale.games.csgo",
+    "scale.games.garrysmod",
+    "scale.games.left4dead2",
+    "scale.games.other",
+    "scale.perms.web_groups",
+    "scale.perms.server_groups",
+    "scale.perms.overrides",
+    "scale.perms.immunity",
+    "scale.web_bans_majority_30d",
+    "panel.exported_30d"
   ]
 }

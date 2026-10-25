@@ -15,6 +15,8 @@ export const canonicalPayload = {
     git: "abc1234",
     dev: false,
     theme: "default",
+    region: "eu",
+    exported_30d: true,
   },
   env: {
     php: "8.2",
@@ -48,6 +50,24 @@ export const canonicalPayload = {
     comms_total: 5108,
     submissions_30d: 23,
     protests_30d: 0,
+    bans_30d: 311,
+    admins_active_30d: 5,
+    ban_history_months: 74,
+    web_bans_majority_30d: false,
+    games: {
+      tf: true,
+      cstrike: false,
+      csgo: true,
+      garrysmod: false,
+      left4dead2: false,
+      other: true,
+    },
+    perms: {
+      web_groups: true,
+      server_groups: true,
+      overrides: false,
+      immunity: true,
+    },
   },
   features: {
     submit: true,
