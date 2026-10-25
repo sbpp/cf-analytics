@@ -62,6 +62,22 @@ describe("validate (dispatch + zod boundary cases)", () => {
     expect(() => validate({ schema: 1, instance_id: "" })).toThrow(ZodError);
   });
 
+  it("accepts the nested scale.games / scale.perms objects and rejects wrong-typed leaves", () => {
+    expect(() =>
+      validate({
+        schema: 1,
+        instance_id: "abc",
+        scale: { games: { tf: true }, perms: { immunity: false } },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validate({ schema: 1, instance_id: "abc", scale: { games: { tf: "yes" } } }),
+    ).toThrow(ZodError);
+    expect(() => validate({ schema: 1, instance_id: "abc", scale: { bans_30d: "311" } })).toThrow(
+      ZodError,
+    );
+  });
+
   it("rejects wrong-typed required scalar fields", () => {
     expect(() => validate({ schema: 1, instance_id: 42 })).toThrow(ZodError);
   });

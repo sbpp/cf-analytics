@@ -14,10 +14,11 @@ exports[`mapDataPoint > maps the canonical payload to the snapshot data point 1`
     "mariadb",
     "10.11",
     null,
+    "eu",
   ],
   "doubles": [
     1,
-    107968910,
+    374441212302,
     256,
     30,
     7,
@@ -29,6 +30,9 @@ exports[`mapDataPoint > maps the canonical payload to the snapshot data point 1`
     5108,
     23,
     0,
+    311,
+    5,
+    74,
   ],
   "indexes": [
     "2.0.0",

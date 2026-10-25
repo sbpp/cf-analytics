@@ -19,6 +19,8 @@ const schema1Panel = z
     git: z.string().optional(),
     dev: z.boolean().optional(),
     theme: z.string().optional(),
+    region: z.string().optional(),
+    exported_30d: z.boolean().optional(),
   })
   .passthrough();
 
@@ -48,6 +50,26 @@ const schema1Env = z
   })
   .passthrough();
 
+const schema1ScaleGames = z
+  .object({
+    tf: z.boolean().optional(),
+    cstrike: z.boolean().optional(),
+    csgo: z.boolean().optional(),
+    garrysmod: z.boolean().optional(),
+    left4dead2: z.boolean().optional(),
+    other: z.boolean().optional(),
+  })
+  .passthrough();
+
+const schema1ScalePerms = z
+  .object({
+    web_groups: z.boolean().optional(),
+    server_groups: z.boolean().optional(),
+    overrides: z.boolean().optional(),
+    immunity: z.boolean().optional(),
+  })
+  .passthrough();
+
 const schema1Scale = z
   .object({
     admins: z.number().optional(),
@@ -58,6 +80,12 @@ const schema1Scale = z
     comms_total: z.number().optional(),
     submissions_30d: z.number().optional(),
     protests_30d: z.number().optional(),
+    bans_30d: z.number().optional(),
+    admins_active_30d: z.number().optional(),
+    ban_history_months: z.number().optional(),
+    web_bans_majority_30d: z.boolean().optional(),
+    games: schema1ScaleGames.optional(),
+    perms: schema1ScalePerms.optional(),
   })
   .passthrough();
 

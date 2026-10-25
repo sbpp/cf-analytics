@@ -186,3 +186,117 @@ describe("env.* shared-host fingerprint round-trip (issue #3)", () => {
     expect(bits).toBe(Math.pow(2, lock.bits.indexOf("env.sapi_per_user")));
   });
 });
+
+describe("scale activity / game mix / permission shape / region / export round-trip (issue #6)", () => {
+  // Same contract as the env.* block above: every new slot reads through the
+  // existing readPath / bit-pack path, including the two-level nesting under
+  // scale.games / scale.perms. These tests pin each slot to its lock-derived
+  // position and pin the sparse-payload defaults.
+
+  const NEW_DOUBLES = ["scale.bans_30d", "scale.admins_active_30d", "scale.ban_history_months"];
+
+  const NEW_BITS = [
+    "scale.games.tf",
+    "scale.games.cstrike",
+    "scale.games.csgo",
+    "scale.games.garrysmod",
+    "scale.games.left4dead2",
+    "scale.games.other",
+    "scale.perms.web_groups",
+    "scale.perms.server_groups",
+    "scale.perms.overrides",
+    "scale.perms.immunity",
+    "scale.web_bans_majority_30d",
+    "panel.exported_30d",
+  ];
+
+  const bitSet = (bits: number, name: string): boolean =>
+    (Math.floor(bits / Math.pow(2, lock.bits.indexOf(name))) & 1) === 1;
+
+  it("appends the new slots after every pre-existing slot", () => {
+    // Append-only: the new names occupy the tail of each lock array, in the
+    // order the issue lists them.
+    expect(lock.blobs.slice(-1)).toEqual(["panel.region"]);
+    expect(lock.doubles.slice(-NEW_DOUBLES.length)).toEqual(NEW_DOUBLES);
+    expect(lock.bits.slice(-NEW_BITS.length)).toEqual(NEW_BITS);
+    expect(lock.blobs.indexOf("extras")).toBe(lock.blobs.length - 2);
+  });
+
+  it("round-trips every new signal to its lock-derived position", () => {
+    const dp = mapDataPoint(canonicalPayload);
+
+    expect(dp.blobs[lock.blobs.indexOf("panel.region")]).toBe("eu");
+
+    expect(dp.doubles[lock.doubles.indexOf("scale.bans_30d")]).toBe(311);
+    expect(dp.doubles[lock.doubles.indexOf("scale.admins_active_30d")]).toBe(5);
+    expect(dp.doubles[lock.doubles.indexOf("scale.ban_history_months")]).toBe(74);
+
+    const bits = dp.doubles[lock.doubles.indexOf("panel_features_bits")] ?? 0;
+    expect(bitSet(bits, "scale.games.tf")).toBe(true);
+    expect(bitSet(bits, "scale.games.cstrike")).toBe(false);
+    expect(bitSet(bits, "scale.games.csgo")).toBe(true);
+    expect(bitSet(bits, "scale.games.garrysmod")).toBe(false);
+    expect(bitSet(bits, "scale.games.left4dead2")).toBe(false);
+    expect(bitSet(bits, "scale.games.other")).toBe(true);
+    expect(bitSet(bits, "scale.perms.web_groups")).toBe(true);
+    expect(bitSet(bits, "scale.perms.server_groups")).toBe(true);
+    expect(bitSet(bits, "scale.perms.overrides")).toBe(false);
+    expect(bitSet(bits, "scale.perms.immunity")).toBe(true);
+    expect(bitSet(bits, "scale.web_bans_majority_30d")).toBe(false);
+    expect(bitSet(bits, "panel.exported_30d")).toBe(true);
+
+    // The nested games / perms objects are typed, not unknown top-level keys.
+    expect(dp.blobs[lock.blobs.indexOf("extras")]).toBeNull();
+  });
+
+  it.each(NEW_BITS)("places %s alone at its lock-derived bit", (name) => {
+    const payload: Record<string, unknown> = { schema: 1, instance_id: "abc" };
+    // Build the nested object for `name` (e.g. scale.games.tf -> { scale: { games: { tf: true } } }).
+    const segments = name.split(".");
+    let cursor = payload;
+    for (const seg of segments.slice(0, -1)) {
+      const next: Record<string, unknown> = {};
+      cursor[seg] = next;
+      cursor = next;
+    }
+    cursor[segments[segments.length - 1]!] = true;
+
+    const dp = mapDataPoint(payload);
+    const bits = dp.doubles[lock.doubles.indexOf("panel_features_bits")] ?? 0;
+    expect(bits).toBe(Math.pow(2, lock.bits.indexOf(name)));
+  });
+
+  it("emits null/0 for the new signals when the panel sends an older payload", () => {
+    const older = {
+      schema: 1 as const,
+      instance_id: canonicalPayload.instance_id,
+      panel: { version: "2.0.0", git: "abc1234", dev: false, theme: "default" },
+      scale: {
+        admins: 12,
+        servers_enabled: 7,
+        bans_active: 2847,
+        bans_total: 18394,
+        comms_active: 412,
+        comms_total: 5108,
+        submissions_30d: 23,
+        protests_30d: 0,
+      },
+    };
+    const dp = mapDataPoint(older);
+
+    expect(dp.blobs[lock.blobs.indexOf("panel.region")]).toBeNull();
+    expect(dp.blobs[lock.blobs.indexOf("extras")]).toBeNull();
+
+    for (const name of NEW_DOUBLES) {
+      expect(dp.doubles[lock.doubles.indexOf(name)], `expected ${name} to be null`).toBeNull();
+    }
+
+    const bits = dp.doubles[lock.doubles.indexOf("panel_features_bits")] ?? 0;
+    for (const name of NEW_BITS) {
+      expect(bitSet(bits, name), `expected bit ${name} to be 0 for older payload`).toBe(false);
+    }
+
+    // Legacy scale doubles still serialise.
+    expect(dp.doubles[lock.doubles.indexOf("scale.bans_total")]).toBe(18394);
+  });
+});

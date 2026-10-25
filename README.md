@@ -36,7 +36,9 @@ panel issue is the source of truth for the wire field set.
     "version": "2.0.0",
     "git": "abc1234",
     "dev": false,
-    "theme": "default"
+    "theme": "default",
+    "region": "eu",
+    "exported_30d": true
   },
   "env": {
     "php": "8.2",
@@ -69,7 +71,25 @@ panel issue is the source of truth for the wire field set.
     "comms_active": 412,
     "comms_total": 5108,
     "submissions_30d": 23,
-    "protests_30d": 0
+    "protests_30d": 0,
+    "bans_30d": 311,
+    "admins_active_30d": 5,
+    "ban_history_months": 74,
+    "web_bans_majority_30d": false,
+    "games": {
+      "tf": true,
+      "cstrike": false,
+      "csgo": true,
+      "garrysmod": false,
+      "left4dead2": false,
+      "other": true
+    },
+    "perms": {
+      "web_groups": true,
+      "server_groups": true,
+      "overrides": false,
+      "immunity": true
+    }
   },
   "features": {
     "submit": true,
@@ -121,6 +141,11 @@ the load-bearing trust contract from
 `request.cf.colo` (the edge node id) is allowed — it identifies our edge, not
 the client.
 
+`panel.region` is not a geolocation of the request. The panel derives it from
+its own configured `config.timezone` and sends only the continent code (`af`,
+`as`, `eu`, `na`, `oc`, `sa`) or omits it; the Worker never reads
+`request.cf.timezone` or any other `request.cf` location field to fill it.
+
 The Worker is structured so the AE data point is built _only_ from the
 validated body. Headers and `request.cf` are never read on the ingest path.
 That makes "no IP data path" the default, not an opt-in. The IP-stripping
@@ -168,7 +193,8 @@ edit policy):
    `lock.blobs` / `lock.doubles` at the next free position. Until promotion,
    queries reach it via `json_extract(blob<extras>, '$.new_field')`.
 2. **Slot exhaustion.** Schema-1 reserves 20 blob slots and 20 double slots.
-   Currently 11/20 blobs and 13/20 doubles are committed. Once an addition
+   Currently 12/20 blobs and 16/20 doubles are committed, and 39/53 bits of
+   `panel_features_bits`. Once an addition
    would push past the cap, the field lives permanently in `extras` until a
    schema bump. **We never reshuffle existing slot positions** — AE indexes
    are positional, and historical rows already use the current layout.
@@ -201,7 +227,8 @@ deep-equality both directions.
     "env.web_server",
     "env.db_engine",
     "env.db_version",
-    "extras"
+    "extras",
+    "panel.region"
   ],
   "doubles": [
     "schema",
@@ -216,7 +243,10 @@ deep-equality both directions.
     "scale.comms_active",
     "scale.comms_total",
     "scale.submissions_30d",
-    "scale.protests_30d"
+    "scale.protests_30d",
+    "scale.bans_30d",
+    "scale.admins_active_30d",
+    "scale.ban_history_months"
   ],
   "bits": [
     "panel.dev",
@@ -245,7 +275,19 @@ deep-equality both directions.
     "env.host_panel_plesk",
     "env.host_panel_directadmin",
     "env.docroot_user_home",
-    "env.sapi_per_user"
+    "env.sapi_per_user",
+    "scale.games.tf",
+    "scale.games.cstrike",
+    "scale.games.csgo",
+    "scale.games.garrysmod",
+    "scale.games.left4dead2",
+    "scale.games.other",
+    "scale.perms.web_groups",
+    "scale.perms.server_groups",
+    "scale.perms.overrides",
+    "scale.perms.immunity",
+    "scale.web_bans_majority_30d",
+    "panel.exported_30d"
   ]
 }
 ```
@@ -261,16 +303,20 @@ deep-equality both directions.
   `panel.version`, which gives bounded cardinality and is the field most
   queries filter on.
 - `bits[i]` is bit `i` (LSB = 0) of the `panel_features_bits` double.
-  27 booleans pack into one double (well under the 53-bit safe-integer
-  ceiling), leaving 7/20 doubles free for future scale dimensions.
+  39 booleans pack into one double (under the 53-bit safe-integer
+  ceiling), leaving 4/20 doubles free for future scale dimensions.
 - Missing typed strings → `null` in the corresponding blob. Missing scale
   numbers → `null` in the corresponding double (so analysts can distinguish
   "not sent" from "zero"). Missing booleans → `0` bits in
   `panel_features_bits`. The `panel_features_bits` double is always present.
-- `extras` (last blob) is `null` when there are no unknown top-level keys,
+- `extras` (`blob11`) is `null` when there are no unknown top-level keys,
   otherwise a JSON-stringified object of every unknown top-level key. AE
   stores nothing rather than `{}` so analysts don't have to coalesce empty
-  objects out.
+  objects out. It is no longer the last blob: slots promoted after it (e.g.
+  `panel.region`) append behind it, because positions never move.
+- Nested objects flatten to dotted names: `scale.games.tf` reads
+  `payload.scale.games.tf`. Rows written before a slot existed read as
+  `null` (doubles / blobs) or `0` (bits), the same as "not sent".
 
 ## `featureFlag(name)` SQL macro for AE
 
@@ -447,9 +493,9 @@ curl -i http://127.0.0.1:8787/v1/ping \
   -d '{
     "schema": 1,
     "instance_id": "test-instance-0000000000000000000000000000000000000000000000000000",
-    "panel": {"version":"2.0.0","git":"abc1234","dev":false,"theme":"default"},
+    "panel": {"version":"2.0.0","git":"abc1234","dev":false,"theme":"default","region":"eu","exported_30d":false},
     "env": {"php":"8.2","sapi":"fpm-fcgi","db_engine":"mariadb","db_version":"10.11","web_server":"litespeed","os_family":"linux","memory_limit_mb":256,"max_execution_time":30,"disable_functions_count":7,"zts":false,"php_64bit":true,"open_basedir_set":true,"allow_url_fopen":true,"opcache_loaded":true,"suhosin_loaded":false,"posix_available":true,"host_panel_cpanel":true,"host_panel_plesk":false,"host_panel_directadmin":false,"docroot_user_home":true,"sapi_per_user":true},
-    "scale": {"admins":1,"servers_enabled":1,"bans_active":0,"bans_total":0,"comms_active":0,"comms_total":0,"submissions_30d":0,"protests_30d":0},
+    "scale": {"admins":1,"servers_enabled":1,"bans_active":0,"bans_total":0,"comms_active":0,"comms_total":0,"submissions_30d":0,"protests_30d":0,"bans_30d":0,"admins_active_30d":1,"ban_history_months":0,"web_bans_majority_30d":false,"games":{"tf":true,"cstrike":false,"csgo":false,"garrysmod":false,"left4dead2":false,"other":false},"perms":{"web_groups":false,"server_groups":false,"overrides":false,"immunity":false}},
     "features": {"submit":true,"protest":false,"comms":false,"kickit":false,"exportpublic":false,"publiccomments":false,"steamlogin":true,"normallogin":true,"groupbanning":false,"friendsbanning":false,"adminrehashing":false,"smtp_configured":false,"steam_api_key_set":false,"geoip_present":false}
   }'
 ```
